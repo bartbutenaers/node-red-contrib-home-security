@@ -1,0 +1,434 @@
+<!--
+  Copyright 2021, Bart Butenaers
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+  http://www.apache.org/licenses/LICENSE-2.0
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<script type="text/javascript">
+// Use an anonymous function, to make sure that the global functions have a local scope (so they cannot interfer with other global functions that have the same name)
+(function() {
+    // The resizeDialog code is based on the Node-RED 20-inject.html file
+    function resizeDialog(size) {
+        // Get the total height available in the popup dialog (for this node's config screen)
+        size = size || { height: $(".red-ui-tray-content form").height() }
+        
+        // Get the already used heigh, i.e. the height of all the first level DIV elements (i.e. not the nested DIV elements).
+        // This is the space used by the top level form-row DIV elements, e.g. to show the "Name" input field.
+        // Note that the current tabsheet content (i.e. #node-alarm-tabs-content) space is ignored, since that is the one we need to calculate.
+        var rows = $("#dialog-form>div:not(#node-alarm-tabs-content):visible");
+        var height = size.height;
+        for (var i=0; i<rows.length; i++) {
+            height -= $(rows[i]).outerHeight(true);
+        }
+        var editorRow = $("#dialog-form>div#node-alarm-tabs-content");
+        height -= (parseInt(editorRow.css("marginTop"))+parseInt(editorRow.css("marginBottom")));
+        height += 16;
+        
+        // When (beside the editableList row) other extra rows are being used INSIDE the currently visible tabsheet,
+        // then the height of these rows should also be taken into account...
+        $(".node-alarm-tab-content:visible").find(".extra_tab_content").each(function(i) {
+            var extraRow = $(this);
+            height -= extraRow.outerHeight(true);
+        });
+        
+        // Set the current visible editableList container height to the available height.
+        // The catch will be triggered when the dialog is opened: every addTab function (in the oneditprepare) will trigger it, 
+        // but at that moment the editableList elements are not initialized yet (resulting in an exception).
+        // That is however not a problem, since immediately afterwards the oneditresize function will trigger this code again...
+        try {
+            $(".auto-height-container:visible").editableList('height',height);
+        }
+        catch(err) {}
+    }
+    
+    // Get the number of available scenarios, which also have a name and a label.
+    // Because both values are required to populate the "scenario" dropdown with options...
+    function enableDisableTriggersTabsheet() {
+        var namedScenariosCount = 0;
+                    
+        // Count how many scenarios with a name have been specified
+        $("#node-input-scenarios-container").editableList('items').each(function(i) {
+            var scenario = $(this);
+            var name = scenario.find(".node-input-scenario-name").val();
+            var label = scenario.find(".node-input-scenario-label").val();
+            
+            if (name && name.trim() !== "" && label && label.trim() !== "") {
+                namedScenariosCount++;
+            }
+        });
+        
+        // The "triggers" tabsheet should be enabled when named scenarios are available.
+        // Note that enabling/disabling tabsheets is not supported by Node-RED (see https://discourse.nodered.org/t/disable-a-tabsheet-in-config-screen/32031)
+        if (namedScenariosCount > 0) {
+            $("#red-ui-tab-node-alarm-tab-triggers").css('pointer-events', "");
+            $("#red-ui-tab-node-alarm-tab-triggers").css('opacity', "");
+        }
+        else {
+            $("#red-ui-tab-node-alarm-tab-triggers").css('pointer-events', "none");
+            $("#red-ui-tab-node-alarm-tab-triggers").css('opacity', "0.4");
+        }
+    }
+    
+    RED.nodes.registerType('home-security',{
+        category: 'alarm',
+        color: '#a6bbcf',
+        defaults: {
+            scenarios: {value: []},
+            triggers: {value: []},
+            commandField: {value: "command"},
+            sourceField: {value: "topic"},
+            triggerValueField: {value: "payload"},
+            rate: {value: "source"},
+            name: {value:""}
+        },
+        inputs:1,
+        outputs:5,
+        outputLabels: [
+            "Result",           // Result of normal commands like e.g.
+            "Ignored",          // Problems ignored during activation of the scenario
+            "Warnings",         // Problems that arrive during arming (and which will be resend afterwards when entering 'armed')
+            "Problems",         // Problems that arrive during arming and armed
+            "Mode updates"      // Message for every mode update
+        ],
+        icon: "font-awesome/fa-bell",
+        paletteLabel: "alarm system",
+        label: function() {
+            return this.name || "alarm system";
+        },
+        oneditprepare: function() { 
+            var node = this;
+            
+            debugger;
+
+            // Show tabsheets
+            node.tabs = RED.tabs.create({
+                id: "node-alarm-tabs",
+                onchange: function(tab) {
+                    // Show only the content (i.e. the children) of the selected tabsheet, and hide the others
+                    $("#node-alarm-tabs-content").children().hide();
+                    $("#" + tab.id).show();
+                    
+                    if (tab.id == "node-alarm-tab-triggers") {
+                        var scenarioDropdown = $("#node-input-scenario");
+                        
+                        // Remove all previous options from the dropdown
+                        scenarioDropdown.find('option').remove();
+                        
+                        // Fill the dropdown with all available scenarios (from the first tabsheet)
+                        var scenariosList = $("#node-input-scenarios-container").editableList('items');
+                        scenariosList.each(function(i) {
+                            var scenario = $(this);
+                            var name = scenario.find(".node-input-scenario-name").val();
+                            var label = scenario.find(".node-input-scenario-label").val();
+                            
+                            scenarioDropdown.append('<option value="' + name + '">' + label + '</option>');
+                        });
+ 
+                        // Make sure the change event of the dropdown is triggered, so the alarm triggers editableList content is filtered
+                        $("#node-input-scenario").change();
+                    }
+
+                    // Make sure that the editableList on this tab will fill the entire available area
+                    resizeDialog();
+                }
+            });
+            node.tabs.addTab({
+                id: "node-alarm-tab-scenarios",
+                label: "Scenarios"
+            });
+            node.tabs.addTab({
+                id: "node-alarm-tab-triggers",
+                label: "Alarm triggers"
+            });
+            node.tabs.addTab({
+                id: "node-alarm-tab-settings",
+                label: "Settings"
+            });
+            
+            // The "triggers" tabsheet is disabled by default, to avoid that triggers are added while no scenarios have been defined yet.
+            // Not supported by Node-RED (see https://discourse.nodered.org/t/disable-a-tabsheet-in-config-screen/32031)
+            $("#red-ui-tab-node-alarm-tab-triggers").css('pointer-events', "none");
+            $("#red-ui-tab-node-alarm-tab-triggers").css('opacity', "0.4");
+ 
+            var scenariosList = $("#node-input-scenarios-container").css('min-height','150px').css('min-width','450px').editableList({
+                // Apply css to the parent div to have margins, to make sure the percentages of the headers match those of the html elements below.
+                // Thanks to hotNipi for this tip !!!
+                header: $("<div>").css({"margin-left":"28px","margin-right":"10x","padding-right":"0px"}).append($.parseHTML(
+                   "<div style='width:30%; display:inline-grid; text-align:center'><b>Name</b></div>"       +
+                   "<div style='width:30%; display:inline-grid; text-align:center'><b>Label</b></div>"      +
+                   "<div style='width:15%; display:inline-grid; text-align:center'><b>Act. delay</b></div>" +
+                   "<div style='width:15%; display:inline-grid; text-align:center'><b>Alarm delay</b></div>")),
+                addItem: function(container, i, scenario) {
+                    // Add a new row to the editableList
+                    var row = $('<div/>').appendTo(container);
+                    
+                    // When the "add" button is clicked, an empty (i.e. {}) trigger item will be added.
+                    // Make sure all default values are stored inside the empty trigger object...
+                    if (Object.keys(scenario).length === 0) {
+                        // As soon as a new item is added, it will be related to the currently selected scenario from now on ...
+                        scenario.name = "";
+                        scenario.label = "";
+                        scenario.activationDelay = 0;
+                        scenario.alarmDelay = 0;
+                    }
+                    
+                    // Column 1 : Add an input field (type string) to the new row, that represents the name (i.e. key) of the scenario
+                    var nameField = $('<input/>',{class:"node-input-scenario-name",type:"text",placeholder:"Name"}).css({"width":"30%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    nameField.val(scenario.name);
+                    // Adding or removing scenario names will determine whether the "triggers" tabsheet is enabled or disabled
+                    nameField.on('change keydown paste input', function(){
+                        enableDisableTriggersTabsheet();
+                    });
+                     
+                    // Column 2 : Add an input field (type string) to the new row, that represents the label of the scenario
+                    var labelField = $('<input/>',{class:"node-input-scenario-label",type:"text",placeholder:"Label"}).css({"width":"30%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    labelField.val(scenario.label);
+                    // Adding or removing scenario labels will determine whether the "triggers" tabsheet is enabled or disabled
+                    labelField.on('change keydown paste input', function(){
+                        enableDisableTriggersTabsheet();
+                    });
+
+                    // Column 3 : Add an input field (type string) to the new row, that represents the activation delay of the scenario
+                    var activationDelayField = $('<input/>',{class:"node-input-scenario-activation",type:"number"}).css({"width":"15%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    activationDelayField.val(scenario.activationDelay);
+
+                    // Column 4 : Add an input field (type string) to the new row, that represents the alarm delay of the scenario
+                    var alarmDelayField = $('<input/>',{class:"node-input-scenario-alarm",type:"number"}).css({"width":"15%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    alarmDelayField.val(scenario.alarmDelay);
+
+                    // The "triggers" tabsheet should be enabled when named scenarios are available
+                    enableDisableTriggersTabsheet();
+                },
+                removeItem: function(data) {
+                    // The "triggers" tabsheet should be disabled when no named scenarios are available
+                    enableDisableTriggersTabsheet();
+                },
+                removable: true,
+                sortable: true
+            });
+            
+            // Show all the scenarios (stored in this node) into the editableList
+            if (this.scenarios) {
+                this.scenarios.forEach(function (scenario, index) {
+                    scenariosList.editableList('addItem', scenario);
+                });
+            }
+            
+            var triggersList = $("#node-input-triggers-container").css('min-height','150px').css('min-width','450px').editableList({
+                // Apply css to the parent div to have margins, to make sure the percentages of the headers match those of the html elements below.
+                // Thanks to hotNipi for this tip !!!
+                header: $("<div>").css({"margin-left":"28px","margin-right":"10x","padding-right":"0px"}).append($.parseHTML(
+                   "<div style='width:22%; display:inline-grid; text-align:center'><b>Source</b></div>"        +
+                   "<div style='width:12%; display:inline-grid; text-align:center'><b>Trigger value</b></div>" +
+                   "<div style='width:22%; display:inline-grid; text-align:center'><b>Description</b></div>"   +
+                   "<div style='width:15%; display:inline-grid; text-align:center'><b>Ignorable</b></div>"     +
+                  " <div style='width:15%; display:inline-grid; text-align:center'><b>Immediate</b></div>")),
+                addItem: function(container, i, trigger) {
+                    // Add a new row to the editableList
+                    var row = $('<div/>').appendTo(container);
+                    
+                    // When the "add" button is clicked, an empty (i.e. {}) trigger item will be added.
+                    // Make sure all default values are stored inside the empty trigger object, because that object will be used for filtering.
+                    // Otherwise the filter function will receive the original empty trigger object as 'data' input parameter...
+                    if (Object.keys(trigger).length === 0) {
+                        var selectedScenario = $("#node-input-scenario").val();
+                    
+                        // As soon as a new item is added, it will be related to the currently selected scenario from now on ...
+                        trigger.scenarioName = selectedScenario;
+                        trigger.source = "";
+                        trigger.triggerValueType = "num";
+                        trigger.description = "";
+                        trigger.triggerValue = 0;  
+                        trigger.ignorable = false;
+                    }
+
+                    // Store in the background to which scenario this item belongs.
+                    var scenarioNameField = $('<input/>',{class:"node-input-trigger-scenarioName",type:"hidden"}).appendTo(row);
+                    // For new items, the selected scenario should become the scenario to which this item belongs from now on ...
+                    scenarioNameField.val(trigger.scenarioName);
+                    
+                    // Column 1 : Add an input field (type string) to the new row, that represents the source of the trigger
+                    var sourceField = $('<input/>',{class:"node-input-trigger-source",type:"text",placeholder:"Source"}).css({"width":"22%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    sourceField.val(trigger.source);
+                     
+                    // Column 2 : Add an input field (type string) to the new row, that represents the value of the trigger
+                    var triggerValueField = $('<input/>',{class:"node-input-trigger-triggerValue",type:"Value"}).css({"width":"12%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    var triggerValueTypeField = $('<input/>',{class:"node-input-trigger-triggerValueType",type:"hidden"}).appendTo(row);
+                    triggerValueField.typedInput({
+                        typeField: triggerValueTypeField,
+                        types: ["str", "num", "bool", "json"]
+                    });
+                    triggerValueField.typedInput("value", trigger.triggerValue);  
+                    triggerValueField.typedInput("type", trigger.triggerValueType);
+
+                    // Column 3 : Add an input field (type string) to the new row, that represents the description of the trigger
+                    var descriptionField = $('<input/>',{class:"node-input-trigger-description",type:"text",placeholder:"Description"}).css({"width":"22%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    descriptionField.val(trigger.description);                    
+
+                    // Column 4 : Add an input field (type checkbox) to the new row, that represents whether the trigger is ignorable or not
+                    var ignorableField = $('<input/>',{class:"node-input-trigger-ignorable",type:"checkbox"}).css({"width":"15%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    ignorableField.prop('checked', trigger.ignorable);
+                    
+                    // Column 5 : Add an input field (type checkbox) to the new row, that represents whether the trigger should be send immediately (or wait for the arming timer)
+                    var immediateField = $('<input/>',{class:"node-input-trigger-immediate",type:"checkbox"}).css({"width":"15%","margin-left":"5px","margin-right":"5px"}).appendTo(row);
+                    immediateField.prop('checked', trigger.immediate);
+                },
+                removable: true,
+                sortable: true,
+                filter: function(data) {
+                    // Only show the alarm triggers that are related to the selected scenario.
+                    // When a new item is added, the data will be an empty object, i.e. {} ...
+                    var selectedScenario = $("#node-input-scenario").val();
+                    return (Object.keys(data).length === 0) || (selectedScenario === data.scenarioName);
+                }
+            });
+            
+            // Show all the triggers (stored in this node) into the editableList
+            if (this.triggers) {
+                this.triggers.forEach(function (trigger, index) {
+                    triggersList.editableList('addItem', trigger);
+                });
+            }
+            
+            // Show the commandField value in a typedinput element (dropdown with only 'msg')
+            $("#node-input-commandField").typedInput({
+                types:['msg'],
+                typeField: $("#node-input-commandField")
+            });   
+            
+             // Show the sourceField value in a typedinput element (dropdown with only 'msg')
+            $("#node-input-sourceField").typedInput({
+                types:['msg'],
+                typeField: $("#node-input-sourceField")
+            });              
+            
+            // Show the triggerValueField value in a typedinput element (dropdown with only 'msg')
+            $("#node-input-triggerValueField").typedInput({
+                types:['msg'],
+                typeField: $("#node-input-triggerValueField")
+            });
+            
+            $("#node-input-scenario").on('change', function() {
+                // Filter the list of alarm triggers (based on the current active filter function), to show only the alarm triggers
+                // that are related to the newly selected scenario.
+                $("#node-input-triggers-container").editableList('filter');
+            });
+        },
+        oneditsave: function() {
+            var scenarioNames = [];
+ debugger;           
+            var node = this;
+
+            // Copy all the scenarios from the editableList to this node
+            node.scenarios = [];
+            var scenariosList = $("#node-input-scenarios-container").editableList('items');
+            scenariosList.each(function(i) {
+                var scenario        = $(this);
+                var name            = scenario.find(".node-input-scenario-name").val();
+                var label           = scenario.find(".node-input-scenario-label").val();
+                var activationDelay = scenario.find(".node-input-scenario-activation").val();
+                var alarmDelay      = scenario.find(".node-input-scenario-alarm").val();
+
+                node.scenarios.push({
+                    name:            name,
+                    label:           label,
+                    activationDelay: activationDelay,
+                    alarmDelay:      alarmDelay
+                });
+                
+                scenarioNames.push(name);
+            });
+            
+            // Copy all the triggers from the editableList to this node
+            node.triggers = [];
+            var triggersList = $("#node-input-triggers-container").editableList('items');
+            triggersList.each(function(i) {
+                var trigger          = $(this);
+                var scenarioName     = trigger.find(".node-input-trigger-scenarioName").val();
+                var source           = trigger.find(".node-input-trigger-source").val();
+                var triggerValue     = trigger.find(".node-input-trigger-triggerValue").typedInput("value");  
+                var triggerValueType = trigger.find(".node-input-trigger-triggerValue").typedInput("type");
+                var description      = trigger.find(".node-input-trigger-description").val();
+                var ignorable        = trigger.find(".node-input-trigger-ignorable").prop('checked');
+                var immediate        = trigger.find(".node-input-trigger-immediate").prop('checked');
+
+                // Only store the trigger when the corresponding scenario still exists
+                if (scenarioNames.includes(scenarioName)) {
+                    node.triggers.push({
+                        scenarioName:     scenarioName,
+                        source:           source,
+                        triggerValue:     triggerValue,
+                        triggerValueType: triggerValueType,
+                        description:      description,
+                        ignorable:        ignorable,
+                        immediate:        immediate});
+                }
+            });
+        },
+        oneditresize: function(size) {
+            resizeDialog(size);
+        }
+    });
+})();
+</script>
+
+<script type="text/x-red" data-template-name="home-security">
+    <div class="form-row">
+        <label for="node-input-name"><i class="icon-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <!-- Tabsheets -->
+        <ul style="background: #fff; min-width: 600px; margin-bottom: 20px;" id="node-alarm-tabs"></ul>
+    </div>
+    <div id="node-alarm-tabs-content" style="min-height: 150px">
+        <!-- Content of all tabsheets -->
+        <div id="node-alarm-tab-scenarios" class="node-alarm-tab-content">
+            <div class="form-row">
+                <!-- Table with scenarios -->
+                <ol id="node-input-scenarios-container" class="auto-height-container"></ol>
+            </div>        
+        </div>
+        <div id="node-alarm-tab-triggers" class="node-alarm-tab-content">
+            <div class="form-row extra_tab_content">
+                <label for="node-input-scenario"><i class="fa fa-list-alt"></i> Scenario</label>
+                <select id="node-input-scenario"></select>
+            </div>
+            <div class="form-row">
+                <!-- Table with alarm triggers -->
+                <ol id="node-input-triggers-container" class="auto-height-container"></ol>
+            </div>         
+        </div>
+        <div id="node-alarm-tab-settings" class="node-energy-tab-content">
+            <div class="form-row">
+                <label for="node-input-commandField"><i class="fa fa-wrench"></i> Command</label>
+                <input type="text" id="node-input-commandField" step="1">
+            </div>
+            <div class="form-row">
+                <label for="node-input-sourceField"><i class="fa fa-microchip"></i> Source</label>
+                <input type="text" id="node-input-sourceField" step="1">
+            </div>
+            <div class="form-row">
+                <label for="node-input-triggerValueField"><i class="fa fa-bell-o"></i> Trigger value</label>
+                <input type="text" id="node-input-triggerValueField" step="1">
+            </div>
+            <div class="form-row">
+                <label for="node-input-rate"><i class="fa fa-filter"></i> Rate</label>
+                <select id="node-input-rate">
+                    <option value="all">All alarms</option> 
+                    <option value="source">One alarm per source</option>
+                    <!-- <option value="scenario">One alarm per scenario</option> -->
+                </select>
+            </div>
+        </div>
+</script>
+
+<script type="text/x-red" data-help-name="home-security">
+    <p>A node to implement basic home alarm system functionality in Node-RED.</p>   
+</script>
