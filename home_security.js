@@ -285,13 +285,15 @@ module.exports = function(RED) {
                         return;
                     }
                     
-                    // Remember for every trigger (of this source) the LAST problem status
+                    // Remember for every trigger (of this source!) the LAST problem status
                     node.triggers.forEach(function (trigger, index, array) {
-                        if(msg.payload == trigger.triggerValue) {// TODO  een switch-case maken om de gelijkheid te testen per type value (en in aparte fucntie stoppen voor reused)
-                            trigger.hasProblem = true;
-                        }
-                        else {
-                            trigger.hasProblem = false;
+                        if (source == trigger.source) {
+                            if(msg.payload == trigger.triggerValue) {// TODO  een switch-case maken om de gelijkheid te testen per type value (en in aparte fucntie stoppen voor reused)
+                                trigger.hasProblem = true;
+                            }
+                            else {
+                                trigger.hasProblem = false;
+                            }
                         }
                     });
                 
