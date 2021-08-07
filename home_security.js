@@ -123,9 +123,7 @@ module.exports = function(RED) {
             node.problemCount = 0;
         }
         
-        function setModeAndStatus(newMode, statusShape, statusColor) {
-            node.mode = newMode;
-
+        function setStatus(statusShape, statusColor) {
             // When problems have been detected, then show the number of problems in the node status
             var postFix = "";
             if (node.problemCount > 0) {
@@ -137,8 +135,14 @@ module.exports = function(RED) {
                 shape: statusShape, 
                 text:  "scenario " + node.activeScenario.name + postFix
             });
+        }
+        
+        function setModeAndStatus(newMode, statusShape, statusColor) {
+            node.mode = newMode;
 
-            // Send a status update message on the "status update" output
+            setStatus(statusShape, statusColor);
+
+            // Send a status update message on the "mode update" output
             node.send([null, null, null, null, {payload: node.activeScenario.name, topic: newMode}]);
         }
         
@@ -370,6 +374,7 @@ module.exports = function(RED) {
                                 node.send([null, null, msg, null, null]);
                             }
                             node.problemCount++;
+                            setStatus("ring", "red"); // Show the updated problem count
                             break;
                         case MODE_ARMING:
                             // Buffer all the messages, so they can be send after the arming timer has finished (i.e. in 'armed' mode).
@@ -379,10 +384,13 @@ module.exports = function(RED) {
                             // By sending the msg immediately to the 'warnings' output, we can give a warning (e.g. a buzzer sound)
                             node.send([null, null, msg, null, null]);
                             node.problemCount++;
+                            setStatus("dot", "red"); // Show the updated problem count
                             break;
                         case MODE_ARMED:
                             // Send the problem msg to the 'problems' output, since all problem message should be handled now as soon as possible
                             node.send([null, null, null, msg, null]);
+                            node.problemCount++;
+                            setStatus("dot", "red"); // Show the updated problem count
                             break;
                     }                
                     break;
